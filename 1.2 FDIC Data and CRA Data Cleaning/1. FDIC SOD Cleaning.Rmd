@@ -1,0 +1,80 @@
+---
+title: "1. FDIC-SOD-Cleaning"
+author: "Xingchen Chen"
+date: "2025-03-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+
+```
+
+# set up direction
+
+```{r}
+data.dir <- "/Users/xingchenchen/Desktop/Course/BA-Finance II/Assignment3- Final Project/Data"
+data.processed.dir <- "/Users/xingchenchen/Desktop/Course/BA-Finance II/Assignment3- Final Project/Data/Data Processed"
+fdic_sod_data_dir <- paste(data.dir, "FDIC-SOD", sep = "/")
+```
+
+# load data
+### the sod definition data 
+```{r}
+# the sod definition data
+
+sod_definition <- 
+  read.csv(paste(fdic_sod_data_dir, "sod_variable_definitions.csv", sep = "/"))
+
+# SOD data, annual data merging 
+## CALL: CALL and TFR Report identifier (Institution)
+## PLACENUM: Place Number (Branch)
+## CNTYNAMB: County Name (Branch)
+## CITYBR: City (Reported)(Branch)
+## YEAR
+## NAMEFULL
+## NAMEBR: Branch Name (Branch)
+
+
+## RSSDID: Federal Reserve ID Number
+## FEDNAME: Federal Reserve District Name (Institution)
+
+## CERT: FDIC Certificate #
+## FDICDBS: FDIC Region Number
+## FDICNAME: FDIC Region Name (Institution)
+
+## DEPSUM: Total Deposits (Institution)
+## DEPDOM: Deposits Held in Domestic Offices
+## DEPSUMBR: Deposits (Branch)(in thousands of dollars)
+
+## SIMS_LATITUDE:
+## SIMS_LONGITUDE: 
+## SIMS_PROJECTION
+## SIMS_DESCRIPTION
+### combining every year together
+
+annual_sod_merge <- data.frame()
+
+for (year in 1994:2024) {
+annual_sod <- 
+  read.csv(paste0(fdic_sod_data_dir, "/SOD_CustomDownload_ALL_",year,"_06_30.csv"))
+
+annual_sod <- annual_sod %>% 
+  select(YEAR,CERT,RSSDID,FEDNAME,FDICDBS,FDICNAME,STCNTYBR,
+         NAMEFULL,NAMEBR,SIMS_PROJECTION,SIMS_LATITUDE,SIMS_LONGITUDE,SIMS_DESCRIPTION,CALL,
+         PLACENUM,CNTYNAMB,CITYBR,DEPDOM,DEPSUM,DEPSUMBR)
+
+annual_sod_merge <- rbind(annual_sod_merge, annual_sod)
+print(year)
+}
+
+# save the data 
+
+saveRDS(annual_sod_merge, paste(data.processed.dir, "1. FDIC_SOD_MERGE.rds", sep = "/"))
+
+```
+
+
+
+
