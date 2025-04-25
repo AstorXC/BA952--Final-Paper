@@ -1,0 +1,170 @@
+---
+title: "3. Climate Bins and FDIC SOD Merge"
+author: "Xingchen Chen"
+output: html_document
+date: "2025-03-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rnoaa)
+library(dplyr)
+library(ggplot2)
+library(tigris)
+library(sf)
+library(future.apply)
+library(tidyr)
+library(fixest)
+library(psych)
+plan(multisession, workers = 4)
+fixest::setFixest_nthreads(4) 
+data.dir <- "C:/Users/xc172/Box/BA952- Finance II/Data"
+data.processed.dir <- "C:/Users/xc172/Box/BA952- Finance II/Data/Data Processed"
+
+```
+
+# Load NOAA Each Year and Merge together
+
+
+```{r}
+dt_noaa <- data.frame()
+
+for (year in 1981:2024) {
+  data <- readRDS(paste0(data.processed.dir, "/2.Climate/Binsdata_midyear_", year, ".rds"))
+  data <- data %>% mutate(YEAR = year)
+  dt_noaa <- rbind(dt_noaa, data)
+  print(year)
+}
+
+dt_noaa$STCNTYBR <- as.numeric(as.character(dt_noaa$county_code))
+
+counties <- counties(cb = TRUE, resolution = "20m", year = 2023)  # 选择最新年份
+
+counties <- counties %>% select(STATEFP, COUNTYFP, GEOID)
+
+dt_noaa <- left_join(dt_noaa, counties, join_by(county_code == GEOID))
+dt_noaa <- dt_noaa %>% mutate(Pday50up = pbin50 + pbin60 + pbin70 +pbin80 + pbin90 +pbin100up)
+dt_noaa <- dt_noaa %>% mutate(dd5binBelowNeg2 = dd5binBelowNeg7 + dd5binNeg7)
+dt_noaa <- dt_noaa %>% mutate(dd5binBelow3 = dd5binBelowNeg7 + dd5binNeg2 + dd5binNeg7)
+
+
+dt_noaa <- dt_noaa %>% group_by(
+    county_code, COUNTYFP, STATEFP, YEAR
+  ) %>% summarise(
+    dd5binBelowNeg7 = sum(dd5binBelowNeg7),
+    dd5binBelowNeg2 = sum(dd5binBelowNeg2),
+    dd5binBelow3 = sum(dd5binBelow3),
+    dd5binNeg2 = sum(dd5binNeg2),
+    dd5bin3 = sum(dd5bin3),
+    dd5bin8 = sum(dd5bin8),
+    dd5bin13 = sum(dd5bin13),
+    dd5bin18 = sum(dd5bin18),
+    dd5bin23 = sum(dd5bin23),
+    dd5bin28 = sum(dd5bin28),
+    dd5bin33up = sum(dd5bin33up),
+    pbin10 = sum(pbin10),
+    pbin20 = sum(pbin20),
+    pbin30 = sum(pbin30),
+    pbin40 = sum(pbin40),
+    Pday50up = sum(Pday50up),
+    prcp = sum(prcp))
+```
+
+
+# generate long-difference----------------
+
+We generate the 10 year average in the previous year
+
+```{r}
+dt_noaa_filter_group <- data.frame()
+for (year in 1994:2024) {
+  dt_noaa_filter <- dt_noaa %>% filter(YEAR< year & YEAR >= year -10)
+  dt_noaa_filter <- dt_noaa_filter %>% group_by(
+    county_code, COUNTYFP, STATEFP
+  ) %>% summarise(
+    dd5binBelowNeg7 = mean(dd5binBelowNeg7),
+    dd5binBelowNeg2 = mean(dd5binBelowNeg2),
+    dd5binBelow3 = mean(dd5binBelow3),
+    dd5binNeg2 = mean(dd5binNeg2),
+    dd5bin3 = mean(dd5bin3),
+    dd5bin8 = mean(dd5bin8),
+    dd5bin13 = mean(dd5bin13),
+    dd5bin18 = mean(dd5bin18),
+    dd5bin23 = mean(dd5bin23),
+    dd5bin28 = mean(dd5bin28),
+    dd5bin33up = mean(dd5bin33up),
+    pbin10 = mean(pbin10),
+    pbin20 = mean(pbin20),
+    pbin30 = mean(pbin30),
+    pbin40 = mean(pbin40),
+    Pday50up = mean(Pday50up))
+  dt_noaa_filter <- dt_noaa_filter %>% mutate(YEAR = year)
+  dt_noaa_filter_group <- rbind(dt_noaa_filter_group, dt_noaa_filter)
+  print(year)
+}
+
+
+dt_noaa_total <- dt_noaa_filter_group %>% group_by(county_code) %>% 
+  summarise(
+    dd5binBelowNeg7 = mean(dd5binBelowNeg7),
+    dd5binBelowNeg2 = mean(dd5binBelowNeg2),
+    dd5binBelow3 = mean(dd5binBelow3),
+    dd5binNeg2 = mean(dd5binNeg2),
+    dd5bin3 = mean(dd5bin3),
+    dd5bin8 = mean(dd5bin8),
+    dd5bin13 = mean(dd5bin13),
+    dd5bin18 = mean(dd5bin18),
+    dd5bin23 = mean(dd5bin23),
+    dd5bin28 = mean(dd5bin28),
+    dd5bin33up = mean(dd5bin33up),
+    pbin10 = mean(pbin10),
+    pbin20 = mean(pbin20),
+    pbin30 = mean(pbin30),
+    pbin40 = mean(pbin40),
+    Pday50up = mean(Pday50up))
+
+
+names(dt_noaa_filter_group)[4:19] <- paste0(names(dt_noaa_filter_group)[4:19], "_1")
+names(dt_noaa_total)[2:17] <- paste0(names(dt_noaa_total)[2:17], "_2")
+
+dt_noaa_final <- left_join(dt_noaa, dt_noaa_filter_group)
+dt_noaa_final <- dt_noaa_final %>% mutate(
+    dd5binBelowNeg7_short = dd5binBelowNeg7 - dd5binBelowNeg7_1,
+    dd5binBelowNeg2_short = dd5binBelowNeg2 - dd5binBelowNeg2_1,
+    dd5binBelow3_short = dd5binBelow3 - dd5binBelow3_1,
+    dd5binNeg2_short = dd5binNeg2-dd5binNeg2_1,
+    dd5bin3_short = dd5bin3-dd5bin3_1,
+    dd5bin8_short = dd5bin8-dd5bin8_1,
+    dd5bin13_short = dd5bin13-dd5bin13_1,
+    dd5bin18_short = dd5bin18-dd5bin18_1,
+    dd5bin23_short = dd5bin23-dd5bin23_1,
+    dd5bin28_short = dd5bin28-dd5bin28_1,
+    dd5bin33up_short = dd5bin33up-dd5bin33up_1,
+    pbin10_short = pbin10-pbin10_1,
+    pbin20_short = pbin20-pbin20_1,
+    pbin30_short = pbin30-pbin30_1,
+    pbin40_short = pbin40-pbin40_1,
+    Pday50up_short = Pday50up-Pday50up_1)
+
+dt_noaa_final <- left_join(dt_noaa_final, dt_noaa_total)
+dt_noaa_final <- dt_noaa_final %>% mutate(
+    dd5binBelowNeg7_long = dd5binBelowNeg7_1-dd5binBelowNeg7_2,
+    dd5binBelowNeg2_long = dd5binBelowNeg2_1-dd5binBelowNeg2_2,
+    dd5binBelow3_long = dd5binBelow3_1-dd5binBelow3_2,
+    dd5binNeg2_long = dd5binNeg2_1-dd5binNeg2_2,
+    dd5bin3_long = dd5bin3_1-dd5bin3_2,
+    dd5bin8_long = dd5bin8_1-dd5bin8_2,
+    dd5bin13_long = dd5bin13_1-dd5bin13_2,
+    dd5bin18_long = dd5bin18_1-dd5bin18_2,
+    dd5bin23_long = dd5bin23_1-dd5bin23_2,
+    dd5bin28_long = dd5bin28_1-dd5bin28_2,
+    dd5bin33up_long = dd5bin33up_1-dd5bin33up_2,
+    pbin10_long = pbin10_1-pbin10_2,
+    pbin20_long = pbin20_1-pbin20_2,
+    pbin30_long = pbin30_1-pbin30_2,
+    pbin40_long = pbin40_1-pbin40_2,
+    Pday50up_long = Pday50up_1-Pday50up_2)
+
+saveRDS(dt_noaa_final, paste(data.processed.dir, "3. NOAA_MERGE_JUNE.rds", sep = "/"))
+
+```

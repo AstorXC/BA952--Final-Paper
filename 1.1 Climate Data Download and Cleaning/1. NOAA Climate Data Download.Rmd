@@ -1,0 +1,35 @@
+---
+title: "2. NOAA Climate Data"
+author: "Xingchen Chen"
+date: "2025-03-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rnoaa)
+library(dplyr)
+library(ggplot2)
+data.dir <- "C:/Users/xc172/Box/BA952- Finance II/Data"
+data.processed.dir <- "C:/Users/xc172/Box/BA952- Finance II/Data/Data Processed"
+
+```
+
+
+# Loading Climate Data from NOAA
+
+```{r}
+
+library(GSODR)
+
+for (year in 1980:1993) {
+gsod_data <- get_GSOD(years = year, country = "US")
+#head(gsod_data)
+saveRDS(gsod_data, paste0(data.dir, "/Weather Data/climate_", year, ".rds"))
+print(year)
+}
+
+
+```
+
+

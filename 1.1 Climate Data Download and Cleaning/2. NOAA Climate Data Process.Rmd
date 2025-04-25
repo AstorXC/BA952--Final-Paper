@@ -1,0 +1,414 @@
+---
+title: "2.1 NOAA Climate Data Process"
+author: "Xingchen Chen"
+output: html_document
+date: "2025-03-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rnoaa)
+library(dplyr)
+library(ggplot2)
+library(tigris)
+library(sf)
+library(future.apply)
+library(tidyr)
+data.dir <- "C:/Users/xc172/Box/BA952- Finance II/Data"
+data.processed.dir <- "C:/Users/xc172/Box/BA952- Finance II/Data/Data Processed"
+
+```
+
+# Load The GEOID from USMAP
+
+
+```{r}
+
+# 获取所有县的 shapefile 数据
+counties <- counties(cb = TRUE, resolution = "20m", year = 2023)  # 选择最新年份
+
+# 计算县的质心
+county_centroids <- st_centroid(counties)
+
+# 创建 sfc 点几何对象
+# 将字符串拆开变成 lon 经度 和 lat 纬度
+
+county_centroids <- county_centroids %>%
+  mutate(y = st_coordinates(county_centroids$geometry)[,1],
+         x = st_coordinates(county_centroids$geometry)[,2])
+
+
+  # 首先，我们定义距离公式
+calculate_distance  <- function(lat1, lon1, lat2, lon2) {
+  R <- 6371  # 地球的平均半径，单位为公里
+  rad <- pi / 180  # 用于将度转换为弧度
+  
+  # 将经纬度从度转换为弧度
+  lat1_rad <- lat1 * rad
+  lon1_rad <- lon1 * rad
+  lat2_rad <- lat2 * rad
+  lon2_rad <- lon2 * rad
+  
+  # 计算两点的大圆距离
+  distance <- R * acos(sin(lat1_rad) * sin(lat2_rad) +
+                         cos(lat1_rad) * cos(lat2_rad) * cos(lon2_rad - lon1_rad))
+  return(distance)
+}
+
+
+
+```
+
+
+# Clean Climate Data
+
+```{r}
+
+
+# 定义一个函数来处理每个 county
+process_county <- function(i) {
+  county_town <- county_centroids$GEOID[i]  # 确定需要插值的 town
+  insert_weight <- all_combinations_for_insert %>% filter(county_code == county_town)  # 筛选对应 town 的 station
+
+  TEM_dt_insert <- gsod_data %>%
+    filter(STNID %in% insert_weight$station_list_code) %>%
+    left_join(insert_weight, by = c("STNID" = "station_list_code")) %>%  # 加上权重
+    group_by(YEAR, MONTH, DAY, COUNTRY_NAME, county_code) %>%
+    summarise(
+      w_mean_tem = weighted.mean(TEMP, weight, na.rm = TRUE),
+      w_max_tem = weighted.mean(MAX, weight, na.rm = TRUE),
+      w_min_tem = weighted.mean(MIN, weight, na.rm = TRUE),
+      w_prcp = weighted.mean(PRCP, weight, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # 保存数据
+  saveRDS(TEM_dt_insert, paste0("C:/Users/xc172/Desktop/2.Climate/", county_town, "_", year, "_inserted.rds"))
+  
+  return(i)  # 返回索引以便追踪进度
+}
+
+
+for (year in 1980:1983) {
+  
+gsod_data <- readRDS(paste0(data.dir, "/Weather Data/climate_", year, ".rds"))
+
+
+gsod_location <- gsod_data %>% 
+                  group_by(LATITUDE, LONGITUDE, STNID) %>%
+                  summarise(n=n())
+
+gsod_location <- gsod_location %>% 
+                  rename(y = LONGITUDE,
+                         x = LATITUDE)
+
+# 没有重复的
+all_combinations <- expand.grid(gsod_location = seq(nrow(gsod_location)), county_centroids = seq(nrow(county_centroids)))
+
+all_combinations_2 <- expand.grid(station_list_code = gsod_location$STNID, 
+                                  county_code = county_centroids$GEOID)
+
+# 计算每对点之间的距离
+all_combinations$distance <- mapply(function(i, j) {
+  calculate_distance(gsod_location$y[i], gsod_location$x[i], 
+                     county_centroids$y[j], county_centroids$x[j])
+}, all_combinations$gsod_location, all_combinations$county_centroids)
+
+all_combinations <- cbind(all_combinations,all_combinations_2)
+
+#这里我们绘制一下整个距离的distribution
+
+all_combinations_distribution <- all_combinations %>% 
+  group_by(county_code) %>% 
+  summarise(max = max(distance),
+            min = min(distance))
+
+max_dist <- ggplot(data = all_combinations_distribution) +
+  geom_density(fill = "blue", alpha = 0.5, aes(x = max)) +  # 绘制核密度估计，填充为半透明的蓝色
+  theme_minimal() +  # 使用简洁的主题
+  labs(x = "Value", y = "Density", title = "Kernel Density Estimation")
+
+min_dist <- ggplot(data = all_combinations_distribution) +
+  geom_density(fill = "red", alpha = 0.5, aes(x = min)) +  # 绘制核密度估计，填充为半透明的蓝色
+  theme_minimal() +  # 使用简洁的主题
+  labs(x = "Value", y = "Density", title = "Kernel Density Estimation")
+
+
+# 根据计算好的distance，做插值
+## 设置 1/distance sqrt weight
+all_combinations <- all_combinations %>% mutate(weight = 1/(distance)^2)
+
+distance_cut = 200 
+
+# TEM
+all_combinations_for_insert <-as.data.frame(all_combinations)  %>% filter(distance <= distance_cut)
+
+
+
+# 将所有的county 都进行一个插值，然后将他们保存下来
+plan(multisession, workers = parallel::detectCores() - 1) 
+
+# 使用 future_lapply 进行并行处理
+results <- future_lapply(1:nrow(county_centroids), process_county)
+
+# 关闭并行计划
+plan(sequential)
+print(year)
+}
+```
+
+# Annual Count
+
+After insert, we start to generate the annual fluctuation from 1994 to 2004 by each county to merge them together
+
+```{r message=FALSE, warning=FALSE}
+
+county <- readRDS(paste(data.processed.dir, "1. FDIC_SOD_MERGE.rds", sep = "/"))
+county <- county %>% group_by(STCNTYBR) %>% summarise(n=n())
+county <- county %>% mutate(GEOID = as.character(STCNTYBR))
+county <- county %>% mutate(GEOID = ifelse(nchar(GEOID) == 4, paste0("0", GEOID), GEOID))
+counties <- counties(cb = TRUE, resolution = "20m", year = 2023)  # 选择最新年份
+county <- left_join(county, counties)
+
+code_match <- county %>% filter(is.na(STATEFP) == FALSE)
+code_match <- code_match %>% filter(STATE_NAME != "Alaska")
+
+for (year in 1980:1993) {
+  bins_data_merge <- data.frame()
+  for (county in 1:nrow(code_match)) {
+    
+    county_town <- code_match$GEOID[county]
+    climate_data <- readRDS(paste0("C:/Users/xc172/Desktop/2.Climate/", county_town, "_", year, "_inserted.rds"))
+    climate_data <- climate_data %>% 
+      mutate(
+        tem_bin_5 = case_when(
+          w_mean_tem >= 35 ~ "dd5bin35up",
+          w_mean_tem >= 30 & w_mean_tem <35 ~ "dd5bin30",
+          w_mean_tem >= 25 & w_mean_tem <30 ~ "dd5bin25",
+          w_mean_tem >= 20 & w_mean_tem <25 ~ "dd5bin20",
+          w_mean_tem >= 15 & w_mean_tem <20 ~ "dd5bin15",
+          w_mean_tem >= 10 & w_mean_tem <15 ~ "dd5bin10",
+          w_mean_tem >= 5 & w_mean_tem <10 ~ "dd5bin5",
+          w_mean_tem >= 0 & w_mean_tem <5 ~ "dd5bin0",
+          w_mean_tem >= -5 & w_mean_tem <0 ~ "dd5binNeg5",
+          w_mean_tem >= -10 & w_mean_tem < -5 ~ "dd5binNeg10",
+          w_mean_tem < -10 ~ "dd5binBelowNeg10"),
+        
+        tem_bin_3 = case_when(
+          w_mean_tem >= 33 ~ "dd5bin33up",
+          w_mean_tem >= 28 & w_mean_tem <33 ~ "dd5bin28",
+          w_mean_tem >= 23 & w_mean_tem <28 ~ "dd5bin23",
+          w_mean_tem >= 18 & w_mean_tem <23 ~ "dd5bin18",
+          w_mean_tem >= 13 & w_mean_tem <18 ~ "dd5bin13",
+          w_mean_tem >= 8 & w_mean_tem <13 ~ "dd5bin8",
+          w_mean_tem >= 3 & w_mean_tem <8 ~ "dd5bin3",
+          w_mean_tem >= -2 & w_mean_tem <3 ~ "dd5binNeg2",
+          w_mean_tem >= -7 & w_mean_tem < -2 ~ "dd5binNeg7",
+          w_mean_tem < -7 ~ "dd5binBelowNeg7"),        
+        
+        
+        max_tem_bin = case_when(
+          w_max_tem >= 35 ~ "ddmax5bin35up",
+          w_max_tem >= 30 & w_max_tem <35 ~ "ddmax5bin30",
+          w_max_tem >= 25 & w_max_tem <30 ~ "ddmax5bin25",
+          w_max_tem >= 20 & w_max_tem <25 ~ "ddmax5bin20",
+          w_max_tem >= 15 & w_max_tem <20 ~ "ddmax5bin15",
+          w_max_tem >= 10 & w_max_tem <15 ~ "ddmax5bin10",
+          w_max_tem >= 5 & w_max_tem <10 ~ "ddmax5bin5",
+          w_max_tem >= 0 & w_max_tem <5 ~ "ddmax5bin0",
+          w_max_tem >= -5 & w_max_tem <0 ~ "ddmax5binNeg5",
+          w_max_tem >= -10 & w_max_tem < -5 ~ "ddmax5binNeg10",
+          w_max_tem < -10 ~ "ddmax5binBelowNeg10"),
+ 
+        min_tem_bin = case_when(
+          w_min_tem >= 35 ~ "ddmin5bin35up",
+          w_min_tem >= 30 & w_min_tem <35 ~ "ddmin5bin30",
+          w_min_tem >= 25 & w_min_tem <30 ~ "ddmin5bin25",
+          w_min_tem >= 20 & w_min_tem <25 ~ "ddmin5bin20",
+          w_min_tem >= 15 & w_min_tem <20 ~ "ddmin5bin15",
+          w_min_tem >= 10 & w_min_tem <15 ~ "ddmin5bin10",
+          w_min_tem >= 5 & w_min_tem <10 ~ "ddmin5bin5",
+          w_min_tem >= 0 & w_min_tem <5 ~ "ddmin5bin0",
+          w_min_tem >= -5 & w_min_tem <0 ~ "ddmin5binNeg5",
+          w_min_tem >= -10 & w_min_tem < -5 ~ "ddmin5binNeg10",
+          w_min_tem < -10 ~ "ddmin5binBelowNeg10"),
+        
+               
+        pre_bin = case_when(
+          w_prcp >= 100 ~ "pbin100up",
+          w_prcp >= 90 & w_prcp <100 ~ "pbin90",
+          w_prcp >= 80 & w_prcp <90 ~ "pbin80",
+          w_prcp >= 70 & w_prcp <80 ~ "pbin70",
+          w_prcp >= 60 & w_prcp <70 ~ "pbin60",
+          w_prcp >= 50 & w_prcp <60 ~ "pbin50",
+          w_prcp >= 40 & w_prcp <50 ~ "pbin40",
+          w_prcp >= 30 & w_prcp <40 ~ "pbin30",
+          w_prcp >= 20 & w_prcp <30 ~ "pbin20",
+          w_prcp >= 10 & w_prcp <20 ~ "pbin10",
+          w_prcp < 10 ~ "pbinBelow10")        
+      )
+   
+    temp_bins_5 <- climate_data %>% group_by(YEAR, county_code, tem_bin_5) %>% summarise(n = n())
+        names(temp_bins_5) <- c("YEAR","county_code","bins","n")
+    temp_bins_3 <- climate_data %>% group_by(YEAR, county_code, tem_bin_3) %>% summarise(n = n())
+        names(temp_bins_3) <- c("YEAR","county_code","bins","n")
+        
+    temp_max_bins <- climate_data %>% group_by(YEAR, county_code, max_tem_bin) %>% summarise(n = n())
+        names(temp_max_bins) <- c("YEAR","county_code","bins","n")
+    temp_min_bins <- climate_data %>% group_by(YEAR, county_code, min_tem_bin) %>% summarise(n = n())
+        names(temp_min_bins) <- c("YEAR","county_code","bins","n")
+    prcp_bins <- climate_data %>% group_by(YEAR, county_code, pre_bin) %>% summarise(n = n())
+        names(prcp_bins) <- c("YEAR","county_code","bins","n")
+    
+    prcp_avg <- climate_data %>% group_by(YEAR, county_code) %>% summarise(prcp = sum(w_prcp, na.rm = TRUE))
+        
+    binsdata <- rbind(temp_bins_5, temp_bins_3, temp_max_bins, temp_min_bins, prcp_bins)
+    binsdata <- left_join(binsdata, prcp_avg)
+    bins_data_merge <- rbind(bins_data_merge, binsdata)
+    
+    print(county_town)
+  }
+   
+  bins_data_merge <- pivot_wider(bins_data_merge, 
+                      names_from = bins, 
+                      values_from = n, 
+                      #id_cols = county_code, 
+                      values_fill = 0)
+  saveRDS(bins_data_merge, paste0(data.processed.dir, "/2.Climate/Binsdata_", year, ".rds"))
+  print(year)
+   
+}
+
+
+```
+
+
+also count the 1994 to 2024 by mid year
+
+```{r message=FALSE, warning=FALSE}
+
+county <- readRDS(paste(data.processed.dir, "1. FDIC_SOD_MERGE.rds", sep = "/"))
+county <- county %>% group_by(STCNTYBR) %>% summarise(n=n())
+county <- county %>% mutate(GEOID = as.character(STCNTYBR))
+county <- county %>% mutate(GEOID = ifelse(nchar(GEOID) == 4, paste0("0", GEOID), GEOID))
+counties <- counties(cb = TRUE, resolution = "20m", year = 2023)  # 选择最新年份
+county <- left_join(county, counties)
+
+code_match <- county %>% filter(is.na(STATEFP) == FALSE)
+code_match <- code_match %>% filter(STATE_NAME != "Alaska")
+
+for (year in 1981:2024) {
+  bins_data_merge <- data.frame()
+  for (county in 1:nrow(code_match)) {
+    
+    county_town <- code_match$GEOID[county]
+    climate_data <- readRDS(paste0("C:/Users/xc172/Desktop/2.Climate/", county_town, "_", year, "_inserted.rds"))
+    climate_data <- climate_data %>% filter(MONTH<=6)
+    year2 = year - 1
+    climate_data_2 <- readRDS(paste0("C:/Users/xc172/Desktop/2.Climate/", county_town, "_", year2, "_inserted.rds"))
+    climate_data_2 <- climate_data_2 %>% filter(MONTH>6)
+    climate_data <- rbind(climate_data, climate_data_2)
+    
+    climate_data <- climate_data %>% mutate(YEAR == year)
+    climate_data <- climate_data %>% 
+      mutate(
+        tem_bin_5 = case_when(
+          w_mean_tem >= 35 ~ "dd5bin35up",
+          w_mean_tem >= 30 & w_mean_tem <35 ~ "dd5bin30",
+          w_mean_tem >= 25 & w_mean_tem <30 ~ "dd5bin25",
+          w_mean_tem >= 20 & w_mean_tem <25 ~ "dd5bin20",
+          w_mean_tem >= 15 & w_mean_tem <20 ~ "dd5bin15",
+          w_mean_tem >= 10 & w_mean_tem <15 ~ "dd5bin10",
+          w_mean_tem >= 5 & w_mean_tem <10 ~ "dd5bin5",
+          w_mean_tem >= 0 & w_mean_tem <5 ~ "dd5bin0",
+          w_mean_tem >= -5 & w_mean_tem <0 ~ "dd5binNeg5",
+          w_mean_tem >= -10 & w_mean_tem < -5 ~ "dd5binNeg10",
+          w_mean_tem < -10 ~ "dd5binBelowNeg10"),
+        
+        tem_bin_3 = case_when(
+          w_mean_tem >= 33 ~ "dd5bin33up",
+          w_mean_tem >= 28 & w_mean_tem <33 ~ "dd5bin28",
+          w_mean_tem >= 23 & w_mean_tem <28 ~ "dd5bin23",
+          w_mean_tem >= 18 & w_mean_tem <23 ~ "dd5bin18",
+          w_mean_tem >= 13 & w_mean_tem <18 ~ "dd5bin13",
+          w_mean_tem >= 8 & w_mean_tem <13 ~ "dd5bin8",
+          w_mean_tem >= 3 & w_mean_tem <8 ~ "dd5bin3",
+          w_mean_tem >= -2 & w_mean_tem <3 ~ "dd5binNeg2",
+          w_mean_tem >= -7 & w_mean_tem < -2 ~ "dd5binNeg7",
+          w_mean_tem < -7 ~ "dd5binBelowNeg7"),        
+        
+        
+        max_tem_bin = case_when(
+          w_max_tem >= 35 ~ "ddmax5bin35up",
+          w_max_tem >= 30 & w_max_tem <35 ~ "ddmax5bin30",
+          w_max_tem >= 25 & w_max_tem <30 ~ "ddmax5bin25",
+          w_max_tem >= 20 & w_max_tem <25 ~ "ddmax5bin20",
+          w_max_tem >= 15 & w_max_tem <20 ~ "ddmax5bin15",
+          w_max_tem >= 10 & w_max_tem <15 ~ "ddmax5bin10",
+          w_max_tem >= 5 & w_max_tem <10 ~ "ddmax5bin5",
+          w_max_tem >= 0 & w_max_tem <5 ~ "ddmax5bin0",
+          w_max_tem >= -5 & w_max_tem <0 ~ "ddmax5binNeg5",
+          w_max_tem >= -10 & w_max_tem < -5 ~ "ddmax5binNeg10",
+          w_max_tem < -10 ~ "ddmax5binBelowNeg10"),
+ 
+        min_tem_bin = case_when(
+          w_min_tem >= 35 ~ "ddmin5bin35up",
+          w_min_tem >= 30 & w_min_tem <35 ~ "ddmin5bin30",
+          w_min_tem >= 25 & w_min_tem <30 ~ "ddmin5bin25",
+          w_min_tem >= 20 & w_min_tem <25 ~ "ddmin5bin20",
+          w_min_tem >= 15 & w_min_tem <20 ~ "ddmin5bin15",
+          w_min_tem >= 10 & w_min_tem <15 ~ "ddmin5bin10",
+          w_min_tem >= 5 & w_min_tem <10 ~ "ddmin5bin5",
+          w_min_tem >= 0 & w_min_tem <5 ~ "ddmin5bin0",
+          w_min_tem >= -5 & w_min_tem <0 ~ "ddmin5binNeg5",
+          w_min_tem >= -10 & w_min_tem < -5 ~ "ddmin5binNeg10",
+          w_min_tem < -10 ~ "ddmin5binBelowNeg10"),
+        
+               
+        pre_bin = case_when(
+          w_prcp >= 100 ~ "pbin100up",
+          w_prcp >= 90 & w_prcp <100 ~ "pbin90",
+          w_prcp >= 80 & w_prcp <90 ~ "pbin80",
+          w_prcp >= 70 & w_prcp <80 ~ "pbin70",
+          w_prcp >= 60 & w_prcp <70 ~ "pbin60",
+          w_prcp >= 50 & w_prcp <60 ~ "pbin50",
+          w_prcp >= 40 & w_prcp <50 ~ "pbin40",
+          w_prcp >= 30 & w_prcp <40 ~ "pbin30",
+          w_prcp >= 20 & w_prcp <30 ~ "pbin20",
+          w_prcp >= 10 & w_prcp <20 ~ "pbin10",
+          w_prcp < 10 ~ "pbinBelow10")        
+      )
+   
+    temp_bins_5 <- climate_data %>% group_by(YEAR, county_code, tem_bin_5) %>% summarise(n = n())
+        names(temp_bins_5) <- c("YEAR","county_code","bins","n")
+    temp_bins_3 <- climate_data %>% group_by(YEAR, county_code, tem_bin_3) %>% summarise(n = n())
+        names(temp_bins_3) <- c("YEAR","county_code","bins","n")
+        
+    temp_max_bins <- climate_data %>% group_by(YEAR, county_code, max_tem_bin) %>% summarise(n = n())
+        names(temp_max_bins) <- c("YEAR","county_code","bins","n")
+    temp_min_bins <- climate_data %>% group_by(YEAR, county_code, min_tem_bin) %>% summarise(n = n())
+        names(temp_min_bins) <- c("YEAR","county_code","bins","n")
+    prcp_bins <- climate_data %>% group_by(YEAR, county_code, pre_bin) %>% summarise(n = n())
+        names(prcp_bins) <- c("YEAR","county_code","bins","n")
+    
+    prcp_avg <- climate_data %>% group_by(YEAR, county_code) %>% summarise(prcp = sum(w_prcp, na.rm = TRUE))
+        
+    binsdata <- rbind(temp_bins_5, temp_bins_3, temp_max_bins, temp_min_bins, prcp_bins)
+    binsdata <- left_join(binsdata, prcp_avg)
+    bins_data_merge <- rbind(bins_data_merge, binsdata)
+    
+    print(county_town)
+  }
+   
+  bins_data_merge <- pivot_wider(bins_data_merge, 
+                      names_from = bins, 
+                      values_from = n, 
+                      #id_cols = county_code, 
+                      values_fill = 0)
+  saveRDS(bins_data_merge, paste0(data.processed.dir, "/2.Climate/Binsdata_midyear_", year, ".rds"))
+  print(year)
+   
+}
+
+
+```
