@@ -24,7 +24,7 @@ In this folder there are a set of coding that is used to downloading and cleanin
 
     2-1. CRA download.R is used to download the CRA plain data.
   
-   2-2. CRA Cleaning.R is used to cleaning the CRA data, which will save the CRA data for future merge with climate data for regression
+    2-2. CRA Cleaning.R is used to cleaning the CRA data, which will save the CRA data for future merge with climate data for regression
 
 3. FDIC Call Report.R is used to cleaning the FDIC Call report and find the default amount for different loan. It will generate the default data for future merge with climate data for regression
 
