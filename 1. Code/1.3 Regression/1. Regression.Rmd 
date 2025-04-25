@@ -1,0 +1,299 @@
+---
+title: "3. Climate Bins and FDIC SOD Merge"
+author: "Xingchen Chen"
+output: html_document
+date: "2025-03-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rnoaa)
+library(dplyr)
+library(ggplot2)
+library(tigris)
+library(sf)
+library(future.apply)
+library(tidyr)
+library(fixest)
+plan(multisession, workers = 4)
+fixest::setFixest_nthreads(4) 
+data.dir <- "C:/Users/xc172/Box/BA952- Finance II/Data"
+data.processed.dir <- "C:/Users/xc172/Box/BA952- Finance II/Data/Data Processed"
+library(psych)
+```
+
+
+
+# Load FDIC-SOD data and Merge
+
+```{r}
+dt_noaa_final <- readRDS(paste(data.processed.dir, "3. NOAA_MERGE_JUNE.rds", sep = "/"))
+dt_noaa_final$STCNTYBR <- as.numeric(as.character(dt_noaa_final$county_code))
+
+#dt_fdic_sod <- readRDS(paste(data.processed.dir, "1. FDIC_SOD_MERGE.rds", sep = "/"))
+#summary_df <- describe(dt_fdic_sod)
+
+#write.csv(summary_df, paste(data.processed.dir, "sod_summary_statistics.csv", sep = "/"), row.names = TRUE)
+
+
+
+dt_merge <- left_join(dt_fdic_sod, dt_noaa_final)
+
+dt_merge <- dt_merge %>% filter(is.na(county_code) == FALSE)
+
+dt_merge <- dt_merge %>% group_by(NAMEBR)%>% mutate(DEPSUMBR_mean = mean(DEPSUMBR))
+
+```
+
+# SOD-------
+
+
+```{r}
+
+test_feols <- feols(
+  data = dt_merge,
+  log(DEPSUMBR) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short + dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp | 
+    NAMEBR + YEAR, vcov = ~county_code, combine.quick = FALSE)
+
+summary(test_feols)
+
+```
+
+
+
+# LOAN-------
+
+
+```{r}
+
+dt_cra_loan <- readRDS(paste(data.processed.dir, "2. CRA_LOAN_MERGE.rds", sep = "/"))
+dt_noaa_final <- readRDS(paste(data.processed.dir, "3. NOAA_MERGE.rds", sep = "/"))
+dt_cra_loan <- dt_cra_loan %>% mutate(YEAR = as.numeric(ActivityYear),
+                                      STCNTYBR = as.numeric(paste0(State, County)))
+
+dt_cra_loan <- dt_cra_loan %>% mutate(n_loan = as.numeric(NumLnBelow100k) + as.numeric(NumLnBelow250k) + as.numeric(NumLnBelow1m),
+                                    v_loan = as.numeric(AmtLnBelow100k) + as.numeric(AmtLnBelow250k) + as.numeric(AmtLnBelow1m))
+
+dt_cra_loan_id <- readRDS(paste(data.processed.dir, "2.1 CRA_CHAR_MERGE.rds", sep = "/"))
+dt_cra_loan <- left_join(dt_cra_loan, dt_cra_loan_id)
+
+dt_cra_loan_summary <- dt_cra_loan %>% group_by(TableID) %>% summarise(
+    n = n(),
+    mean_n_loan = mean(n_loan, na.rm = TRUE),
+    sd_n_loan = sd(n_loan, na.rm = TRUE),
+    min_n_loan = min(n_loan, na.rm = TRUE),
+    max_loan_n_loan = max(n_loan, na.rm = TRUE),
+    median_n_loan = median(n_loan, na.rm = TRUE),
+    mean_v_loan = mean(v_loan, na.rm = TRUE),
+    sd_v_loan = sd(v_loan, na.rm = TRUE),
+    min_v_loan = min(v_loan, na.rm = TRUE),
+    max_v_loan = max(v_loan, na.rm = TRUE),
+    median_v_loan = median(v_loan, na.rm = TRUE)
+)
+
+
+write.csv(dt_cra_loan_summary, paste(data.processed.dir, "loan_summary_statistics.csv", sep = "/"), row.names = TRUE)
+
+
+dt_merge_2 <- left_join(dt_cra_loan, dt_noaa_final)
+
+dt_merge_2 <- dt_merge_2 %>% filter(is.na(county_code) == FALSE)
+
+
+n_loan_feols_origination_small <- feols(
+  data = dt_merge_2 %>% filter(TableID == "D1-1"),
+  log(n_loan) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short + dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp | 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE)
+
+summary(n_loan_feols_origination_small)
+
+n_loan_feols_purchase_small <- feols(
+  data = dt_merge_2 %>% filter(TableID == "D1-2"),
+  log(n_loan) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short + dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp | 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE)
+
+summary(n_loan_feols_purchase_small)
+
+n_loan_feols_origination_farm <- feols(
+  data = dt_merge_2 %>% filter(TableID == "D2-1"),
+  log(n_loan) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short + dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp | 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE)
+
+summary(n_loan_feols_origination_farm)
+
+n_loan_feols_purchase_farm <- feols(
+  data = dt_merge_2 %>% filter(TableID == "D2-2"),
+  log(n_loan) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short + dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp| 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE)
+
+summary(n_loan_feols_purchase_farm)
+
+
+```
+
+
+
+```{r}
+
+
+v_loan_feols_origination_small <- feols(
+  data = dt_merge_2 %>% filter(TableID == "D1-1"),
+  log(v_loan) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short + dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp | 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE)
+
+summary(v_loan_feols_origination_small)
+
+v_loan_feols_purchase_small <- feols(
+  data = dt_merge_2 %>% filter(TableID == "D1-2"),
+  log(v_loan) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short + dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp | 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE)
+
+summary(v_loan_feols_purchase_small)
+
+v_loan_feols_origination_farm <- feols(
+  data = dt_merge_2 %>% filter(TableID == "D2-1"),
+  log(v_loan) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short + dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp | 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE)
+
+summary(v_loan_feols_origination_farm)
+
+v_loan_feols_purchase_farm <- feols(
+  data = dt_merge_2 %>% filter(TableID == "D2-2"),
+  log(v_loan) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short + dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp| 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE)
+
+summary(v_loan_feols_purchase_farm)
+
+
+
+```
+
+
+
+
+# load default---------------------------------------
+
+
+
+```{r}
+
+fdic_data <- readRDS(paste(data.processed.dir, "3. FDIC_LOAN_MERGE.rds", sep = "/"))
+
+summary_df <- describe(fdic_data[,2:5])
+
+write.csv(summary_df, paste(data.processed.dir, "default_summary_statistics.csv", sep = "/"), row.names = TRUE)
+
+
+dt_cra_loan <- dt_cra_loan %>% mutate(RSSDID = as.numeric(ID_RSSD))
+
+fdic_data <- fdic_data %>% filter(ASSET>0)
+fdic_data[is.na(fdic_data)] <- 0
+fdic_data <- fdic_data %>% mutate(YEAR = substr(ID, nchar(ID)-7, nchar(ID)-4))
+fdic_data <- fdic_data %>% mutate(YEAR = as.numeric(YEAR))
+
+default <- left_join(dt_cra_loan, fdic_data)
+default <- default %>% filter(ASSET >0)
+
+default <- left_join(default, dt_noaa_final)
+
+default <- default %>% group_by(RespondentID, YEAR, TableID) %>% mutate(weight = v_loan/sum(v_loan))
+
+
+
+
+default_ag <- feols(
+  data = default%>% filter(TableID == "D2-1"),
+  log(P3AG+P9AG) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short +  dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp| 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE, weights = ~ weight)
+
+summary(default_ag)
+
+
+default_ci <- feols(
+  data = default%>% filter(TableID == "D1-1"),
+  log(P3CI+P9CI) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short +  dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp| 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE, weights = ~ weight)
+
+summary(default_ci)
+
+default_ag_P3AG <- feols(
+  data = default%>% filter(TableID == "D2-1"),
+  log(P3AG) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short +  dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp| 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE, weights = ~ weight)
+
+summary(default_ag_P3AG)
+
+
+default_ci_P3CI <- feols(
+  data = default%>% filter(TableID == "D1-1"),
+  log(P3CI) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short +  dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp| 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE, weights = ~ weight)
+
+summary(default_ci_P3CI)
+
+
+default_ag_P9AG <- feols(
+  data = default%>% filter(TableID == "D2-1"),
+  log(P3AG) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short +  dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp| 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE, weights = ~ weight)
+
+summary(default_ag_P9AG)
+
+
+default_ci_P9CI <- feols(
+  data = default%>% filter(TableID == "D1-1"),
+  log(P9CI) ~ dd5binBelow3_short + dd5bin3_short + dd5bin8_short +  dd5bin23_short + dd5bin28_short + dd5bin33up_short + 
+    dd5binBelow3_long + dd5bin3_long + dd5bin8_long + dd5bin23_long + dd5bin28_long + dd5bin33up_long + prcp| 
+    RespondentID + YEAR, vcov = ~county_code, combine.quick = FALSE, weights = ~ weight)
+
+summary(default_ci_P9CI)
+
+
+```
+
+
+# export result -------------------
+
+
+```{R}
+library(broom)
+results <- list(
+  model1 = tidy(test_feols),
+  model2 = tidy(n_loan_feols_origination_farm),
+  model3 = tidy(n_loan_feols_origination_small),
+  model4 = tidy(v_loan_feols_origination_farm),
+  model5 = tidy(v_loan_feols_origination_small),
+  model6 = tidy(default_ag),
+  model7 = tidy(default_ci),
+    model8 = tidy(default_ag_P3AG),
+  model9 = tidy(default_ci_P3CI),
+      model10 = tidy(default_ag_P9AG),
+  model11 = tidy(default_ci_P9CI)
+)
+
+
+library(writexl)
+write_xlsx(results, path = paste0(data.processed.dir, "/results.xlsx"))
+```
+
+
+
+
+
+
+
+
